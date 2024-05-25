@@ -2,7 +2,7 @@
 
 ## Motivation
 
-In certain situations, we must reverse-hash Sourmash signatures to retrieve the ACGT k-mers for further investigation or downstream analysis. This plugin performs this task efficiently but may benefit from refactoring and enhancements in the future.
+In certain situations, we must reverse-hash sourmash signatures to retrieve the ACGT k-mers for further investigation or downstream analysis. This plugin performs this task efficiently but may benefit from refactoring and enhancements in the future.
 
 
 ## Description
