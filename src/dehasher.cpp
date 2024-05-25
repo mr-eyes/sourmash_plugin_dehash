@@ -152,10 +152,11 @@ public:
         }        
     }
 
-    void map_kmer_to_hashes_single_fasta(string fasta_path){
+    void map_kmer_to_hashes_single_fasta(std::string fasta_path) {
         auto *KD = new Kmers(fasta_path, this->chunk_size, this->kSize, mumur_hasher);
-        while (!KD->end())
-        {
+        size_t total_reads_processed = 0;
+
+        while (!KD->end()) {
             KD->next_chunk();
             for (const auto &seq : *KD->getKmers())
             {
@@ -167,7 +168,10 @@ public:
                         }
                 }
             }
+            total_reads_processed += this->chunk_size;
+            std::cout << "\rReads processed: ~" << total_reads_processed << std::flush;
         }
+        std::cout << std::endl;
         // destroy the object
         delete KD;
     }
