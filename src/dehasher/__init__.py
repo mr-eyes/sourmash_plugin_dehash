@@ -17,7 +17,7 @@ class Command_Dehasher(CommandLinePlugin):
         subparser.add_argument("--sig-paths", nargs="+", required=True, help="signature files to process")
         subparser.add_argument("--fasta-paths", nargs="+", required=True, help="FASTA files to process")
         subparser.add_argument('-k', "--ksize", type=int, required=True, help="k-mer size")
-        subparser.add_argument('-c', "--chunk-size", type=int, required=False, default = 1, help="Number of reads per chunk")
+        subparser.add_argument('-c', "--cores", type=int, required=False, default = 1, help="Number of cores")
         subparser.add_argument('-o', "--out", type=str, required=True, help="output signature path")
 
     
@@ -32,11 +32,12 @@ class Command_Dehasher(CommandLinePlugin):
         dehasher_obj = Dehasher(
             kSize=args.ksize,
             sig_paths = args.sig_paths,
-            chunk_size = args.chunk_size
         )
-    
+
         for fasta in fasta_files:
-            print(f"Processing {fasta}...")
-            dehasher_obj.map_kmer_to_hashes_single_fasta(fasta)
+            if args.cores > 1:
+                dehasher_obj.map_kmer_to_hashes_single_fasta_parallel(fasta, args.cores)
+            else:
+                dehasher_obj.map_kmer_to_hashes_single_fasta(fasta)
         
         dehasher_obj.dump_kmers_to_file(output)

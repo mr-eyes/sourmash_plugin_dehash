@@ -16,7 +16,8 @@ sourmash scripts dehash --sig-paths sample1.sig sample2.sig --fasta-paths raw_re
 ## Usage
 
 ```
-usage:  dehash [-h] [-q] [-d] --sig-paths SIG_PATHS [SIG_PATHS ...] --fasta-paths FASTA_PATHS [FASTA_PATHS ...] -k KSIZE [-c CHUNK_SIZE] -o OUT
+usage:  dehash [-h] [-q] [-d] --sig-paths SIG_PATHS [SIG_PATHS ...] --fasta-paths FASTA_PATHS [FASTA_PATHS ...] -k
+               KSIZE [-c CORES] -o OUT
 
 Dehash sourmash signatures to ACGT k-mers
 
@@ -30,8 +31,8 @@ options:
                         FASTA files to process
   -k KSIZE, --ksize KSIZE
                         k-mer size
-  -c CHUNK_SIZE, --chunk-size CHUNK_SIZE
-                        Number of reads per chunk
+  -c CORES, --cores CORES
+                        Number of cores
   -o OUT, --out OUT     output signature path
 ```
 
@@ -43,8 +44,3 @@ This plugin has a C++ extension, so you will need a C++ compiler to install it. 
 ```
 pip install git+https://github.com/mr-eyes/sourmash_plugin_dehash
 ```
-
-
-## Technical details
-
-We use `simdjson` for parsing the json file, and we use the `parallel_hashmap` to count the kmers in parallel.

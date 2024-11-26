@@ -5,7 +5,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "dehasher"
-version = "0.2"
+version = "1.0"
 description = "Dehash sourmash signatures to ACGT k-mers"
 readme = "README.md"
 requires-python = ">=3.8"

@@ -1,9 +1,0 @@
-[submodule "lib/parallel-hashmap"]
-	path = lib/parallel-hashmap
-	url = https://github.com/greg7mdp/parallel-hashmap.git
-[submodule "lib/doctest"]
-	path = lib/doctest
-	url = https://github.com/onqtam/doctest.git
-[submodule "lib/kseq"]
-	path = lib/kseq
-	url = https://github.com/mr-eyes/kseq
