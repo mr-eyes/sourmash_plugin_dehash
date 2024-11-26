@@ -35,7 +35,6 @@ class Command_Dehasher(CommandLinePlugin):
         )
 
         for fasta in fasta_files:
-            print(f"Processing {fasta}...")
             if args.cores > 1:
                 dehasher_obj.map_kmer_to_hashes_single_fasta_parallel(fasta, args.cores)
             else:
