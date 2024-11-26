@@ -9,10 +9,14 @@
 #include <stdexcept>
 #include <nlohmann/json.hpp>
 #include <fstream>
-#include <unordered_map>
 #include <zlib.h>
 #include <kseq++/seqio.hpp>
 #include <hashutil.hpp>
+#include <atomic>
+#include <thread>
+#include <deque>
+#include <condition_variable>
+#include <mutex>
 
 using namespace klibpp;
 using json = nlohmann::json;
