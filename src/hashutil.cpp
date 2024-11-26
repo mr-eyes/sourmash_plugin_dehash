@@ -147,6 +147,19 @@ uint64_t MumurHasher::hash(const string & kmer) {
   
 }
 
+uint64_t MumurHasher::hash(const char* data, size_t len) {
+    std::string kmer(data, len);
+    std::string canonical_kmer = str_canonical(kmer);
+    uint64_t hash_output[2];
+    MurmurHash3_x64_128(canonical_kmer.data(), canonical_kmer.size(), seed, hash_output);
+
+    int64_t hash = static_cast<int64_t>(hash_output[0]);
+    if (hash < 0) hash += static_cast<uint64_t>(1) << 64;
+
+    return static_cast<uint64_t>(hash);
+}
+
+
 IntegerHasher::IntegerHasher(uint64_t kSize) {
     this->kSize = kSize;
     this->mask = BITMASK(2 * kSize);

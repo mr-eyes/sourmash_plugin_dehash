@@ -41,24 +41,32 @@ class Dehasher
 private:
     int kSize;
     vector<string> sig_paths;
-    int chunk_size;
-    phmap::flat_hash_map<uint64_t, std::string> hash_to_kmer;
-    phmap::flat_hash_map<uint64_t, bool> all_hashes;
+    phmap::parallel_flat_hash_map<
+        uint64_t, string,
+        std::hash<uint64_t>,
+        std::equal_to<uint64_t>,
+        std::allocator<std::pair<const uint64_t, string>>,
+        /* Number of submaps */ 6,
+        /* Mutex type */ std::mutex>
+        hash_to_kmer;
+
+    phmap::flat_hash_set<uint64_t> all_hashes;
 
     // This to save all hashes in all sigs
     void fetch_hashes()
+{
+    for (const string &sig_path : sig_paths)
     {
-        for (string sig_path : sig_paths)
+        vector<uint64_t> hashes;
+        get_hashes_from_sig(sig_path, hashes);
+        for (uint64_t hash_val : hashes)
         {
-            vector<uint64_t> hashes;
-            get_hashes_from_sig(sig_path, hashes);
-            for (uint64_t hash_val : hashes)
-            {
-                this->all_hashes[hash_val] = true;
-            }
+            this->all_hashes.insert(hash_val); // Now works with flat_hash_set
         }
-        cout << "Total hashes: " << this->all_hashes.size() << endl;
     }
+    cout << "Total hashes: " << this->all_hashes.size() << endl;
+}
+
 
     void get_hashes_from_large_sig(std::string sigpath, vector<uint64_t> &hashes)
     {
@@ -110,10 +118,9 @@ private:
     }
 
 public:
-    Dehasher(int kSize, vector<string> sig_paths, int chunk_size = 1)
+    Dehasher(int kSize, vector<string> sig_paths)
     {
         this->kSize = kSize;
-        this->chunk_size = chunk_size;
         for (string sig_path : sig_paths)
         {
             if (valid_file(sig_path))
@@ -128,30 +135,163 @@ public:
         this->fetch_hashes();
     }
 
-    void map_kmer_to_hashes_multi_fasta(vector<string> fasta_paths)
+    void map_kmer_to_hashes_multi_fasta_parallel(vector<string> fasta_paths, int num_threads)
     {
-
-        // initialize the hasher
         auto *murmurHasher = new MumurHasher(42);
+        std::atomic<bool> all_hashes_found(false);
+        std::atomic<size_t> hashes_found(0);
 
-        for (string fasta_path : fasta_paths)
+        // Determine the number of threads to use
+        size_t num_files = fasta_paths.size();
+        size_t num_threads_to_use = std::min(num_threads, static_cast<int>(num_files));
+
+        std::atomic<size_t> next_file_index(0);
+
+        // Launch worker threads
+        std::vector<std::thread> threads;
+        for (size_t t = 0; t < num_threads_to_use; ++t)
         {
-            // initialize kseq
-            KSeq record;
-            // fasta path must be C string
-            SeqStreamIn iss(fasta_path.c_str());
-            while (iss >> record)
+            threads.emplace_back([&, t]()
+                                 {
+            size_t total_reads_processed = 0;
+            while (!all_hashes_found)
             {
-                for (int i = 0; i < record.seq.size() - this->kSize + 1; i++)
+                size_t file_index = next_file_index++;
+                if (file_index >= fasta_paths.size())
+                    break;
+
+                const std::string& fasta_path = fasta_paths[file_index];
+                KSeq record;
+                SeqStreamIn iss(fasta_path.c_str());
+                while (iss >> record && !all_hashes_found)
                 {
-                    std::string kmer = record.seq.substr(i, this->kSize);
-                    uint64_t hash = murmurHasher->hash(kmer);
-                    if (this->all_hashes.find(hash) != this->all_hashes.end())
+                    const size_t seq_length = record.seq.size();
+                    const char* seq_data = record.seq.c_str();
+
+                    for (size_t i = 0; i <= seq_length - this->kSize && !all_hashes_found; ++i)
                     {
-                        this->hash_to_kmer[hash] = kmer;
+                        const char* kmer_ptr = seq_data + i;
+                        uint64_t hash = murmurHasher->hash(kmer_ptr, this->kSize);
+
+                        if (this->all_hashes.contains(hash))
+                        {
+                            // Insert into hash_to_kmer using try_emplace
+                            auto [iterator, inserted] = this->hash_to_kmer.try_emplace(hash, std::string(kmer_ptr, this->kSize));
+
+                            if (inserted)
+                            {
+                                size_t current_hashes_found = ++hashes_found;
+                                if (current_hashes_found == this->all_hashes.size())
+                                {
+                                    all_hashes_found = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    ++total_reads_processed;
+                }
+                std::cout << "Thread " << t << " processed ~" << total_reads_processed << " reads from " << fasta_path << std::endl;
+            } });
+        }
+
+        // Wait for all threads to finish
+        for (auto &thread : threads)
+        {
+            thread.join();
+        }
+    }
+
+    void map_kmer_to_hashes_single_fasta_parallel(std::string fasta_path, int num_threads)
+    {
+        auto *murmurHasher = new MumurHasher(42);
+        std::atomic<bool> all_hashes_found(false);
+        std::atomic<bool> done_reading(false);
+        std::atomic<size_t> hashes_found(0);
+
+        // Initialize queues and synchronization primitives
+        std::vector<std::deque<std::string>> thread_queues(num_threads);
+        std::vector<std::mutex> queue_mutexes(num_threads);
+        std::vector<std::condition_variable> queue_cvs(num_threads);
+
+        // Launch worker threads
+        std::vector<std::thread> threads;
+        for (int t = 0; t < num_threads; ++t)
+        {
+            threads.emplace_back([&, t]()
+                                 {
+            size_t total_reads_processed = 0;
+            while (!all_hashes_found)
+            {
+                std::string seq;
+                {
+                    std::unique_lock<std::mutex> lock(queue_mutexes[t]);
+                    queue_cvs[t].wait(lock, [&]() {
+                        return !thread_queues[t].empty() || all_hashes_found || done_reading;
+                    });
+                    if (all_hashes_found || (thread_queues[t].empty() && done_reading))
+                        break;
+                    seq = std::move(thread_queues[t].front());
+                    thread_queues[t].pop_front();
+                }
+
+                const size_t seq_length = seq.size();
+                const char* seq_data = seq.c_str();
+
+                for (size_t i = 0; i <= seq_length - this->kSize && !all_hashes_found; ++i)
+                {
+                    const char* kmer_ptr = seq_data + i;
+                    uint64_t hash = murmurHasher->hash(kmer_ptr, this->kSize);
+
+                    if (this->all_hashes.contains(hash))
+                    {
+                        // Insert into hash_to_kmer using try_emplace
+                        auto [iterator, inserted] = this->hash_to_kmer.try_emplace(hash, std::string(kmer_ptr, this->kSize));
+
+                        if (inserted)
+                        {
+                            size_t current_hashes_found = ++hashes_found;
+                            if (current_hashes_found == this->all_hashes.size())
+                            {
+                                all_hashes_found = true;
+                                break;
+                            }
+                        }
                     }
                 }
+                ++total_reads_processed;
             }
+            std::cout << "Thread " << t << " processed ~" << total_reads_processed << " reads." << std::endl; });
+        }
+
+        // Main thread reads sequences and assigns them to threads
+        KSeq record;
+        SeqStreamIn iss(fasta_path.c_str());
+        size_t seq_index = 0;
+        while (iss >> record && !all_hashes_found)
+        {
+            int thread_idx = seq_index % num_threads;
+            {
+                std::unique_lock<std::mutex> lock(queue_mutexes[thread_idx]);
+                thread_queues[thread_idx].emplace_back(std::move(record.seq));
+            }
+            queue_cvs[thread_idx].notify_one();
+            ++seq_index;
+        }
+
+        // Indicate that reading is done
+        done_reading = true;
+
+        // Notify all threads to finish
+        for (int t = 0; t < num_threads; ++t)
+        {
+            queue_cvs[t].notify_one();
+        }
+
+        // Wait for threads to finish
+        for (auto &thread : threads)
+        {
+            thread.join();
         }
     }
 
@@ -160,18 +300,23 @@ public:
         auto *murmurHasher = new MumurHasher(42);
 
         size_t total_reads_processed = 0;
+        bool all_hashes_found = false;
 
         KSeq record;
         SeqStreamIn iss(fasta_path.c_str());
-        while (iss >> record)
+        while (iss >> record && !all_hashes_found)
         {
-            for (int i = 0; i < record.seq.size() - this->kSize + 1; i++)
+            for (size_t i = 0; i <= record.seq.size() - this->kSize && !all_hashes_found; i++)
             {
-                std::string kmer = record.seq.substr(i, this->kSize);
-                uint64_t hash = murmurHasher->hash(kmer);
+                const char *kmer_ptr = &record.seq[i];
+                uint64_t hash = murmurHasher->hash(kmer_ptr, this->kSize);
                 if (this->all_hashes.find(hash) != this->all_hashes.end())
                 {
-                    this->hash_to_kmer[hash] = kmer;
+                    this->hash_to_kmer[hash] = std::string(kmer_ptr, this->kSize);
+                    if (this->hash_to_kmer.size() == this->all_hashes.size())
+                    {
+                        all_hashes_found = true;
+                    }
                 }
             }
             total_reads_processed++;
@@ -204,9 +349,10 @@ public:
 NB_MODULE(_dehasher_impl, m)
 {
     nb::class_<Dehasher>(m, "Dehasher")
-        .def(nb::init<int, vector<string>, int>(), "kSize"_a, "sig_paths"_a, "chunk_size"_a = 1)
+        .def(nb::init<int, vector<string>>(), "kSize"_a, "sig_paths"_a)
+        .def("map_kmer_to_hashes_single_fasta_parallel", &Dehasher::map_kmer_to_hashes_single_fasta_parallel, "fasta_path"_a, "num_threads"_a)
+        .def("map_kmer_to_hashes_multi_fasta_parallel", &Dehasher::map_kmer_to_hashes_multi_fasta_parallel, "fasta_paths"_a, "num_threads"_a)
         .def("map_kmer_to_hashes_single_fasta", &Dehasher::map_kmer_to_hashes_single_fasta, "fasta_path"_a)
-        .def("map_kmer_to_hashes_multi_fasta", &Dehasher::map_kmer_to_hashes_multi_fasta, "fasta_paths"_a)
         .def("get_hash_to_kmer", &Dehasher::get_hash_to_kmer)
         .def("dump_kmers_to_file", &Dehasher::dump_kmers_to_file, "file_path"_a);
 }

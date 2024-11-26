@@ -104,8 +104,7 @@ public:
     Hasher *clone() override { return new MumurHasher(seed); }
 
     uint64_t hash(const string & Skey) override;
-    // uint64_t hash(uint64_t key) override;
-
+    uint64_t hash(const char* data, size_t len);
     ~MumurHasher(){}
 };
 
