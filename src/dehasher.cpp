@@ -4,25 +4,25 @@
 #include <string>
 #include <nanobind/stl/string.h>
 #include <vector>
-#include "kmerDecoder.hpp"
 #include <parallel_hashmap/phmap.h>
 #include <nanobind/stl/vector.h>
 #include <stdexcept>
-#include <omp.h>
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <unordered_map>
+#include <zlib.h>
+#include <kseq++/seqio.hpp>
+#include <hashutil.hpp>
 
+using namespace klibpp;
 using json = nlohmann::json;
 
 using phmap::parallel_flat_hash_map;
-
 
 namespace nb = nanobind;
 using namespace std;
 using namespace simdjson;
 using namespace nb::literals;
-
 
 bool valid_file(std::string path)
 {
@@ -109,8 +109,6 @@ private:
         }
     }
 
-
-
 public:
     Dehasher(int kSize, vector<string> sig_paths, int chunk_size = 1)
     {
@@ -130,52 +128,57 @@ public:
         this->fetch_hashes();
     }
 
-    
-    void map_kmer_to_hashes_multi_fasta(vector<string> fasta_paths){
+    void map_kmer_to_hashes_multi_fasta(vector<string> fasta_paths)
+    {
+
+        // initialize the hasher
+        auto *murmurHasher = new MumurHasher(42);
+
         for (string fasta_path : fasta_paths)
         {
-            auto *KD = new Kmers(fasta_path, this->chunk_size, this->kSize, mumur_hasher);
-            while (!KD->end())
+            // initialize kseq
+            KSeq record;
+            // fasta path must be C string
+            SeqStreamIn iss(fasta_path.c_str());
+            while (iss >> record)
             {
-                KD->next_chunk();
-                for (const auto &seq : *KD->getKmers())
+                for (int i = 0; i < record.seq.size() - this->kSize + 1; i++)
                 {
-                    for (const auto &kmer : seq.second)
+                    std::string kmer = record.seq.substr(i, this->kSize);
+                    uint64_t hash = murmurHasher->hash(kmer);
+                    if (this->all_hashes.find(hash) != this->all_hashes.end())
                     {
-                        if (this->all_hashes.find(kmer.hash) != this->all_hashes.end())
-                        {
-                            this->hash_to_kmer[kmer.hash] = kmer.str;
-                        }
+                        this->hash_to_kmer[hash] = kmer;
                     }
                 }
             }
-        }        
+        }
     }
 
-    void map_kmer_to_hashes_single_fasta(std::string fasta_path) {
-        auto *KD = new Kmers(fasta_path, this->chunk_size, this->kSize, mumur_hasher);
+    void map_kmer_to_hashes_single_fasta(std::string fasta_path)
+    {
+        auto *murmurHasher = new MumurHasher(42);
+
         size_t total_reads_processed = 0;
 
-        while (!KD->end()) {
-            KD->next_chunk();
-            for (const auto &seq : *KD->getKmers())
+        KSeq record;
+        SeqStreamIn iss(fasta_path.c_str());
+        while (iss >> record)
+        {
+            for (int i = 0; i < record.seq.size() - this->kSize + 1; i++)
             {
-                for (const auto &kmer : seq.second)
-                {   
-                    if (this->all_hashes[kmer.hash])
-                        {
-                            this->hash_to_kmer[kmer.hash] = kmer.str;
-                        }
+                std::string kmer = record.seq.substr(i, this->kSize);
+                uint64_t hash = murmurHasher->hash(kmer);
+                if (this->all_hashes.find(hash) != this->all_hashes.end())
+                {
+                    this->hash_to_kmer[hash] = kmer;
                 }
             }
-            total_reads_processed += this->chunk_size;
-            std::cout << "\rReads processed: ~" << total_reads_processed << std::flush;
+            total_reads_processed++;
         }
+        std::cout << "\rReads processed: ~" << total_reads_processed << std::flush;
         std::cout << std::endl;
-        // destroy the object
-        delete KD;
     }
-
 
     unordered_map<uint64_t, string> get_hash_to_kmer()
     {
@@ -186,7 +189,6 @@ public:
         }
         return hash_to_kmer;
     }
-
 
     void dump_kmers_to_file(string file_path)
     {
